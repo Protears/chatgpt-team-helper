@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
 import { authService, userService, adminService, versionService, purchaseService } from '@/services/api'
 import type { VersionInfo, LatestVersionInfo, Channel, PurchaseProduct, PurchaseMeta, PurchaseOrderType } from '@/services/api'
 import { useAppConfigStore } from '@/stores/appConfig'
@@ -97,6 +97,14 @@ const featureFlags = ref({
 const featureFlagsError = ref('')
 const featureFlagsSuccess = ref('')
 const featureFlagsLoading = ref(false)
+
+// 补录设置（仅超级管理员）
+const accountRecoveryForceTodayCodes = ref(false)
+const accountRecoveryCodeWindowDays = ref('7')
+const accountRecoveryRequireExpireCoverDeadline = ref(false)
+const accountRecoverySettingsError = ref('')
+const accountRecoverySettingsSuccess = ref('')
+const accountRecoverySettingsLoading = ref(false)
 
 // 渠道管理（仅超级管理员）
 const channels = ref<Channel[]>([])
@@ -228,6 +236,7 @@ onMounted(async () => {
   await loadApiKey()
   await Promise.all([
     loadFeatureFlags(),
+    loadAccountRecoverySettings(),
     loadChannels(),
     loadPurchaseProducts(),
     loadPurchaseAvailability(),
@@ -295,6 +304,61 @@ const saveFeatureFlags = async () => {
     featureFlagsError.value = err.response?.data?.error || '保存失败'
   } finally {
     featureFlagsLoading.value = false
+  }
+}
+
+watch(accountRecoveryForceTodayCodes, (next) => {
+  if (!next) {
+    accountRecoveryRequireExpireCoverDeadline.value = false
+  }
+  if (!accountRecoveryCodeWindowDays.value.trim()) {
+    accountRecoveryCodeWindowDays.value = '7'
+  }
+})
+
+const loadAccountRecoverySettings = async () => {
+  accountRecoverySettingsError.value = ''
+  accountRecoverySettingsSuccess.value = ''
+  try {
+    const response = await adminService.getAccountRecoverySettings()
+    const next = response.settings || ({} as any)
+    accountRecoveryForceTodayCodes.value = Boolean(next.forceTodayCodes)
+    accountRecoveryCodeWindowDays.value = String(next.codeWindowDays ?? 7)
+    accountRecoveryRequireExpireCoverDeadline.value = Boolean(next.requireExpireCoverDeadline)
+    if (!accountRecoveryForceTodayCodes.value) {
+      accountRecoveryRequireExpireCoverDeadline.value = false
+    }
+  } catch (err: any) {
+    accountRecoverySettingsError.value = err.response?.data?.error || '加载补录设置失败'
+  }
+}
+
+const saveAccountRecoverySettings = async () => {
+  accountRecoverySettingsError.value = ''
+  accountRecoverySettingsSuccess.value = ''
+  accountRecoverySettingsLoading.value = true
+  try {
+    const parsedDays = Number.parseInt(accountRecoveryCodeWindowDays.value, 10)
+    const codeWindowDays = Number.isFinite(parsedDays) ? Math.max(1, Math.min(365, parsedDays)) : 7
+    const settingsPayload = {
+      forceTodayCodes: accountRecoveryForceTodayCodes.value,
+      codeWindowDays,
+      requireExpireCoverDeadline: accountRecoveryForceTodayCodes.value ? accountRecoveryRequireExpireCoverDeadline.value : false
+    }
+    const response = await adminService.updateAccountRecoverySettings({ settings: settingsPayload })
+    const next = response.settings || ({} as any)
+    accountRecoveryForceTodayCodes.value = Boolean(next.forceTodayCodes)
+    accountRecoveryCodeWindowDays.value = String(next.codeWindowDays ?? 7)
+    accountRecoveryRequireExpireCoverDeadline.value = Boolean(next.requireExpireCoverDeadline)
+    if (!accountRecoveryForceTodayCodes.value) {
+      accountRecoveryRequireExpireCoverDeadline.value = false
+    }
+    accountRecoverySettingsSuccess.value = '已保存'
+    setTimeout(() => (accountRecoverySettingsSuccess.value = ''), 3000)
+  } catch (err: any) {
+    accountRecoverySettingsError.value = err.response?.data?.error || '保存失败'
+  } finally {
+    accountRecoverySettingsLoading.value = false
   }
 }
 
@@ -1366,6 +1430,85 @@ const savePointsWithdrawSettings = async () => {
               @click="saveFeatureFlags"
             >
               {{ featureFlagsLoading ? '保存中...' : '保存功能开关' }}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- 补录设置 -->
+      <Card v-if="isSuperAdmin" class="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden flex flex-col lg:col-span-2">
+        <CardHeader class="border-b border-gray-50 bg-gray-50/30 px-6 py-5 sm:px-8 sm:py-6">
+          <CardTitle class="text-xl font-bold text-gray-900">补录设置</CardTitle>
+          <CardDescription class="text-gray-500">
+            控制补录时可用兑换码的创建时间窗口，以及是否强制账号过期覆盖订单截止日。
+          </CardDescription>
+        </CardHeader>
+        <CardContent class="p-6 sm:p-8 space-y-5 flex-1">
+          <div class="space-y-3">
+            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-100">
+              <div class="space-y-1">
+                <p class="font-medium text-gray-900">强制仅使用当天新创建的兑换码</p>
+                <p class="text-xs text-gray-500">关闭后默认使用近 7 天内创建的兑换码（可自定义）。</p>
+              </div>
+              <input
+                type="checkbox"
+                v-model="accountRecoveryForceTodayCodes"
+                class="w-6 h-6 rounded-md border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+            </div>
+
+            <div v-if="!accountRecoveryForceTodayCodes" class="space-y-2 p-4 bg-gray-50 rounded-2xl border border-gray-100">
+              <Label for="accountRecoveryCodeWindowDays" class="text-xs font-semibold text-gray-500 uppercase tracking-wider">兑换码创建范围（天）</Label>
+              <Input
+                id="accountRecoveryCodeWindowDays"
+                v-model="accountRecoveryCodeWindowDays"
+                type="number"
+                min="1"
+                max="365"
+                placeholder="7"
+                class="h-11 bg-white border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all font-mono text-sm"
+              />
+              <p class="text-xs text-gray-400">例如 7 表示允许使用近 7 天内创建的补录码。</p>
+            </div>
+
+            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-100">
+              <div class="space-y-1">
+                <p class="font-medium text-gray-900">要求账号过期时间覆盖订单截止日</p>
+                <p class="text-xs text-gray-500">仅在开启“强制当天码”时可用；否则后端会强制关闭。</p>
+              </div>
+              <input
+                type="checkbox"
+                v-model="accountRecoveryRequireExpireCoverDeadline"
+                :disabled="!accountRecoveryForceTodayCodes"
+                class="w-6 h-6 rounded-md border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              />
+            </div>
+          </div>
+
+          <div v-if="accountRecoverySettingsError" class="rounded-xl bg-red-50 p-4 text-red-600 border border-red-100 text-sm font-medium">
+            {{ accountRecoverySettingsError }}
+          </div>
+
+          <div v-if="accountRecoverySettingsSuccess" class="rounded-xl bg-green-50 p-4 text-green-600 border border-green-100 text-sm font-medium">
+            {{ accountRecoverySettingsSuccess }}
+          </div>
+
+          <div class="flex flex-col sm:flex-row gap-3">
+            <Button
+              type="button"
+              variant="outline"
+              class="w-full sm:w-auto h-11 px-4 border-gray-200 rounded-xl"
+              @click="loadAccountRecoverySettings"
+            >
+              刷新
+            </Button>
+            <Button
+              type="button"
+              :disabled="accountRecoverySettingsLoading"
+              class="w-full h-11 rounded-xl bg-black hover:bg-gray-800 text-white shadow-lg shadow-black/5"
+              @click="saveAccountRecoverySettings"
+            >
+              {{ accountRecoverySettingsLoading ? '保存中...' : '保存补录设置' }}
             </Button>
           </div>
         </CardContent>
